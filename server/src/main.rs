@@ -1,28 +1,52 @@
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:3333").await?;
+    println!("[SERVER]: Listening on {}", listener.local_addr().unwrap());
+
+    let (tx, _) = broadcast::channel::<String>(12);
+
     loop {
-        let (mut socket, _) = listener.accept().await?;
+        let tx = tx.clone();
+        let (socket, _) = listener.accept().await?;
 
         tokio::spawn(async move {
-            let mut buff= vec![0; 1024];
+            process(socket, tx).await;
+        });
+    }
+}
 
-            loop {
-                match socket.read(&mut buff).await {
-                    Ok(0) => return,
-                    Ok(n) => {
-                        let request = String::from_utf8(Vec::from(&buff[0..n]));
-                        match request {
-                            Ok(r) => println!("ECHO: {r}"),
-                            Err(_) => eprintln!("Error occurred while deserializing the message")
-                        }
+async fn process(mut socket: TcpStream, tx: broadcast::Sender<String>) {
+    let mut buffer = vec![0; 1024];
+    let mut rx = tx.subscribe();
+
+    loop {
+        tokio::select! {
+            result = socket.read(&mut buffer) => {
+                let len = match result {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => {
+                       println!("Unable to parse the message | {e}"); return;
                     }
-                    Err(_) => return
+                };
+                buffer.resize(len, 0);
+
+                let data = String::from_utf8_lossy(&buffer).to_string();
+                tx.send(data).unwrap();
+            }
+            msg = rx.recv() => {
+                match msg {
+                    Ok(message) => {
+                        socket.write_all(message.as_bytes()).await.unwrap();
+                    },
+                    Err(e) => println!("Unable to send a message | {e}")
                 }
             }
-        });
+        }
     }
 }
