@@ -1,6 +1,15 @@
+mod models;
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use models::ChatUser;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
+
+use crate::models::{Request, RequestData, Response, ResponseData};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -9,17 +18,25 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, _) = broadcast::channel::<String>(12);
 
+    let users = Arc::new(RwLock::new(HashMap::<SocketAddr, ChatUser>::new()));
+
     loop {
         let tx = tx.clone();
         let (socket, _) = listener.accept().await?;
 
+        let users = users.clone();
+
         tokio::spawn(async move {
-            process(socket, tx).await;
+            process(socket, tx, users).await;
         });
     }
 }
 
-async fn process(mut socket: TcpStream, tx: broadcast::Sender<String>) {
+async fn process(
+    mut socket: TcpStream,
+    tx: broadcast::Sender<String>,
+    users: Arc<RwLock<HashMap<SocketAddr, ChatUser>>>,
+) {
     let mut buffer = vec![0; 1024];
     let mut rx = tx.subscribe();
 
@@ -34,6 +51,46 @@ async fn process(mut socket: TcpStream, tx: broadcast::Sender<String>) {
                     }
                 };
                 buffer.resize(len, 0);
+
+                let message: Request = match serde_json::from_str(&String::from_utf8_lossy(&buffer)) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        let err_msg = Response {
+                            action: "ERR".to_string(),
+                            data: ResponseData::Error(e.to_string())
+                        };
+                        socket.write_all(serde_json::to_string(&err_msg).unwrap().as_bytes()).await.unwrap();
+                        return;
+                    }
+                };
+
+                match (message.action.as_str(), &message.data) {
+                    ("LOGIN", RequestData::Login(_)) => {
+                       let mut users = users.write().await;
+                       let addr = socket.local_addr().unwrap();
+
+                       if users.contains_key(&addr) {
+                        let err_msg = Response {
+                            action: "ERR".to_string(),
+                            data: ResponseData::Error("User already exists".to_string())
+                        };
+
+                        socket.write_all(serde_json::to_string(&err_msg).unwrap().as_bytes()).await.unwrap();
+                        return;
+                       }
+
+                       users.insert(addr, ChatUser {
+                        user_name: "test".to_string()
+                       });
+
+                    },
+                    ("MSG", RequestData::Message(_)) => {
+
+                    }
+                    _ => {
+                        socket.write_all("Invalid message format".as_bytes()).await.unwrap();
+                    }
+                }
 
                 let data = String::from_utf8_lossy(&buffer).to_string();
                 tx.send(data).unwrap();
