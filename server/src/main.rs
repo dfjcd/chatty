@@ -65,7 +65,7 @@ async fn process(
                 };
 
                 match (message.action.as_str(), &message.data) {
-                    ("LOGIN", RequestData::Login(_)) => {
+                    ("LOGIN", RequestData::Login(u)) => {
                        let mut users = users.write().await;
                        let addr = socket.local_addr().unwrap();
 
@@ -80,12 +80,13 @@ async fn process(
                        }
 
                        users.insert(addr, ChatUser {
-                        user_name: "test".to_string()
+                        user_name: u.to_string()
                        });
 
                     },
-                    ("MSG", RequestData::Message(_)) => {
-
+                    ("MSG", RequestData::Message(m)) => {
+                        //send the message
+                        println!("{}", m);
                     }
                     _ => {
                         socket.write_all("Invalid message format".as_bytes()).await.unwrap();
